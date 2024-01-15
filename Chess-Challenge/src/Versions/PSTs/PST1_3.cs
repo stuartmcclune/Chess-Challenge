@@ -1,13 +1,9 @@
-﻿using ChessChallenge.API;
+using ChessChallenge.API;
 using System;
 using System.Linq;
 
-public class MyBot : IChessBot
+public class PST1_3 : IChessBot
 {
-
-    //zobrist, depth, eval, flag, move
-    //flags: 1 = exact, 2 = beta (lower bound), 3 = alpha (upper bound), 0 implies null
-    (ulong, byte, int, byte, Move)[] TT = new (ulong, byte, int, byte, Move)[1_000_000];
 
     // 0000_King_Queen_Rook_Bishop_Knight_Pawn
     ulong[] mg_pst_enc = {
@@ -167,15 +163,65 @@ public class MyBot : IChessBot
     int[] phase_increment = { 0, 0, 1, 1, 2, 4, 0 };
 
     Board Board;
-    Move BestMoveThisIteration;
     Move BestMove;
     int SearchDepth;
     //TODO: is this needed for iterative deepening?
     //int BestEval;
-    bool SearchAborted;
 
-    public MyBot()
+    public PST1_3()
     {
+
+
+        // for (int sq = 0; sq < 64; sq++)
+        // {
+        //     ulong val = 0;
+        //     for (int pt = 0; pt < 6; pt++)
+        //     {
+        //         int pieceVal = eg_tables[pt][sq];
+        //         bool isNeg = pieceVal < 0;
+        //         ulong posPieceVal = (ulong)(isNeg ? -1 * pieceVal : pieceVal);
+
+        //         ulong signBit = isNeg ? 0b0000_0000000000_0000000000_0000000000_0000000000_0000000000_1000000000 : 0UL;
+
+        //         ulong unshifted = signBit | posPieceVal;
+
+        //         ulong shifted = unshifted << (pt * 10);
+
+        //         val |= shifted;
+        //     }
+        //     string s = "0b" + Convert.ToString((long)val, 2).PadLeft(64, '0') + ",";
+
+        //     for (int i = 5; i >= 0; i--)
+        //     {
+        //         s = s.Insert(7 + 10 * i, "_");
+        //         s = s.Insert(6 + 10 * i, "_");
+        //     }
+
+        //     string[] parts = s.Split('_');
+
+        //     s += " // ";
+
+        //     for (int i = 0; i < 6; i++)
+        //     {
+        //         string sign = parts[1 + 2 * i];
+        //         string posVal = parts[2 + 2 * i];
+        //         posVal = posVal.Replace(",", "");
+
+        //         int intVal = Convert.ToInt32(posVal, 2);
+        //         if (sign == "1") intVal *= -1;
+        //         string sv = sign == "1" ? "" : " ";
+        //         sv += intVal.ToString();
+        //         sv = sv.PadRight(4);
+        //         if (i != 5) sv += "_";
+        //         s += sv;
+        //     }
+
+        //     if (sq % 8 == 0) Console.WriteLine();
+        //     Console.WriteLine(s);
+
+        // }
+
+
         //init PSTs
         for (int pt = 1; pt < 7; pt++)
         {
@@ -192,68 +238,39 @@ public class MyBot : IChessBot
 
     }
 
-    //TODO: aspiration windows
     public Move Think(Board board, Timer timer)
     {
         Board = board;
-        //TODO: abort search
-        SearchAborted = false;
+        SearchDepth = 5;
 
         // DrawBoard(); //#DEBUG
-        //FIXME: the idea is to cancel the search and allow much greater depths
-        for (int idDepth = 1; idDepth < 6; idDepth++)
-        {
-            SearchDepth = idDepth;
-            Search(SearchDepth, -99999999, 99999999);
-            BestMove = BestMoveThisIteration;
-            BestMoveThisIteration = Move.NullMove;
-            //TODO: if we track best eval, we can detect mate and exit at a lower depth
-        }
+
+        Search(SearchDepth, -99999999, 99999999);
 
         return BestMove;
     }
 
     // Negamax + quiesence in 1
-    //TODO: LMR (requiring history)
     private int Search(int depth, int alpha, int beta)
     {
-
-        ulong zobrist = Board.ZobristKey;
-        //TODO: potentially this implementation takes more tokens than required. Look up a negamax impl. Possibly also want fail soft?
-        int eval = -99999999;
+        //TODO: potentially this implementation takes more tokens than required. Look up a negamax impl.
+        int max = -99999999;
         if (depth < 1)
         {
-            eval = Evaluate();
-            if (eval >= beta) return beta;
-            alpha = Math.Max(alpha, eval);
+            max = Evaluate();
+            if (max > beta) return max;
+            alpha = Math.Max(alpha, max);
         }
         else
         {
             if (Board.IsDraw()) return 0;
             if (Board.IsInCheckmate()) return -99999900 - depth;
-
-            (ulong, byte, int, byte, Move) ttEntry = TT[zobrist % 1_000_000];
-            byte ttFlag = ttEntry.Item4;
-            if (ttFlag != 0 && ttEntry.Item1 == zobrist && ttEntry.Item2 >= depth)
-            {
-                int ttEval = ttEntry.Item3;
-
-                //Note this is fail-soft AB, but main negamax algo is fail-hard
-                if (ttFlag == 1 || ttFlag == 2 && ttEval >= beta || ttFlag == 3 && ttEval <= alpha)
-                {
-                    if (SearchDepth == depth) BestMoveThisIteration = ttEntry.Item5; //Note: could be null
-                    return ttEval;
-                }
-            }
         }
-
-        byte flag = 3;
-        Move bestMoveInPos = Move.NullMove;
 
         foreach (Move move in Board.GetLegalMoves(depth < 1)
             .OrderByDescending(m =>
             {
-                //TODO: move ordering - hash move / prev iteration, good captures, promotions, killers, bad captures, castles, history 
+                //TODO: move ordering
                 int score = 0;
                 if (m.IsCapture) score += 10 * mg_base_piece_values[(int)m.CapturePieceType] - mg_base_piece_values[(int)m.MovePieceType];
                 if (m.IsPromotion) score += mg_base_piece_values[(int)m.PromotionPieceType];
@@ -262,30 +279,20 @@ public class MyBot : IChessBot
             }))
         {
             Board.MakeMove(move);
-            eval = -Search(depth - 1, -beta, -alpha);
+            int eval = -Search(depth - 1, -beta, -alpha);
             Board.UndoMove(move);
 
-            if (eval >= beta)
+            if (eval > max)
             {
-                TT[zobrist % 1_000_000] = (zobrist, (byte)depth, beta, 2, move);
-                return beta;
+                max = eval;
+                if (SearchDepth == depth) BestMove = move;
             }
-            if (eval > alpha)
-            {
-                //New best move in position
-                //store an exact in tt
-                flag = 1;
-                bestMoveInPos = move;
 
-                alpha = eval;
-
-                if (SearchDepth == depth) BestMoveThisIteration = move;
-            }
+            if (max > beta) break;
+            alpha = Math.Max(alpha, max);
         }
 
-        TT[zobrist % 1_000_000] = (zobrist, (byte)depth, eval, flag, bestMoveInPos);
-
-        return alpha;
+        return max;
     }
 
     //TODO: called once so more token efficient to inline this
